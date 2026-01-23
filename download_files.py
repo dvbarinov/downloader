@@ -8,7 +8,30 @@ from pathlib import Path
 from typing import List, Dict, Any
 import yaml
 from tenacity import retry, stop_after_attempt, wait_fixed
-from tqdm.asyncio import tqdm  # tqdm поддерживает asyncio напрямую
+#from tqdm.asyncio import tqdm  # tqdm поддерживает asyncio напрямую
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.text import Text
+from rich.progress import (
+    Progress,
+    TaskID,
+    BarColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+    DownloadColumn,
+)
+from rich.layout import Layout
+from rich.table import Table
+
+
+console = Console()
+
+# Глобальные списки для отслеживания состояния
+completed_files = []
+failed_files = []  # хранит кортежи (filename, error_message)
+active_tasks = {}  # task_id -> filename
 
 
 def setup_logging(config: Dict[str, Any]) -> None:
@@ -68,18 +91,24 @@ async def fetch_content(session: aiohttp.ClientSession, url: str) -> bytes:
 
 
 async def download_file(
-        session: aiohttp.ClientSession,
-        url: str,
-        output_dir: Path,
-        semaphore: asyncio.Semaphore,
-        chunk_size: int,
-        retries_enabled: bool,
-        max_attempts: int,
-        delay: float
+    session: aiohttp.ClientSession,
+    url: str,
+    output_dir: Path,
+    semaphore: asyncio.Semaphore,
+    chunk_size: int,
+    retries_enabled: bool,
+    max_attempts: int,
+    delay: float,
+    progress: Progress,
+    task_id: TaskID,
+    filename: str,
 ):
     """Скачивает один файл с ограничением параллелизма"""
+    global completed_files, failed_files, active_tasks
     async with semaphore:  # ограничиваем одновременные запросы
         try:
+            filepath = output_dir / filename
+
             if retries_enabled:
                 # Патчим retry-декоратор под текущие настройки
                 @retry(
@@ -97,24 +126,27 @@ async def download_file(
                                 message=f"HTTP {resp.status}",
                                 headers=resp.headers
                             )
-                        filename = url.split('/')[-1]
-                        filepath = output_dir / filename
+                        # Получаем общий размер, если есть
+                        total = resp.content_length or 0
+                        progress.update(task_id, total=total)
+
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
                                 await f.write(chunk)
-                        return filepath
-
-                filepath = await _download()
+                                progress.update(task_id, advance=len(chunk))
+                await _download()
+                completed_files.append(filename)
                 logging.info(f"✅ Успешно: {url} → {filepath}")
             else:
-                # Без повторов — простая загрузка
                 async with session.get(url) as resp:
                     if resp.status == 200:
-                        filename = url.split('/')[-1]
-                        filepath = output_dir / filename
+                        total = resp.content_length or 0
+                        progress.update(task_id, total=total)
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
                                 await f.write(chunk)
+                                progress.update(task_id, advance=len(chunk))
+                        completed_files.append(filename)
                         logging.info(f"✅ Успешно: {url} → {filepath}")
                     else:
                         raise aiohttp.ClientResponseError(
@@ -124,15 +156,54 @@ async def download_file(
                             message=f"HTTP {resp.status}",
                             headers=resp.headers
                         )
-
         except Exception as e:
+            error_msg = str(e)[:80]  # укоротим длинные ошибки
+            failed_files.append((filename, error_msg))
             logging.error(f"❌ Ошибка при загрузке {url}: {e}")
+        finally:
+            # Удаляем из активных
+            if task_id in active_tasks:
+                del active_tasks[task_id]
 
+    progress.update(task_id, visible=False)
     return True  # важно для as_completed
+
+
+def make_status_display(progress: Progress) -> Table:
+    """Создаёт таблицу с тремя секциями: активные, завершённые, ошибки"""
+    table = Table.grid(expand=True)
+    table.add_column(ratio=1)
+
+    # Активные задачи — используем сам объект Progress
+    if active_tasks:
+        table.add_row(Panel(progress, title=f"📥 В процессе ({len(active_tasks)})", border_style="blue"))
+    else:
+        table.add_row(Text("📥 В процессе (0)", style="blue"))
+
+    # Завершённые
+    if completed_files:
+        completed_text = Text("\n".join(f"• {f}" for f in sorted(completed_files[-20:])))  # последние 20
+        table.add_row(Panel(completed_text, title=f"✅ Завершено ({len(completed_files)})", border_style="green"))
+    else:
+        table.add_row(Text("✅ Завершено (0)", style="green"))
+
+    # Ошибки
+    if failed_files:
+        failed_text = Text("\n".join(f"• {f} → {err}" for f, err in failed_files[-10:]))  # последние 10
+        table.add_row(Panel(failed_text, title=f"❌ Ошибки ({len(failed_files)})", border_style="red"))
+    else:
+        table.add_row(Text("❌ Ошибки (0)", style="red"))
+
+    return table
 
 
 async def download_all(config: Dict[str, Any]):
     """Основная функция загрузки"""
+    global completed_files, failed_files, active_tasks
+    completed_files.clear()
+    failed_files.clear()
+    active_tasks.clear()
+
     dl_cfg = config["download"]
     http_cfg = config["http"]
     urls = expand_wildcard_url(dl_cfg["url_template"])
@@ -152,25 +223,43 @@ async def download_all(config: Dict[str, Any]):
     max_attempts = retry_cfg.get("max_attempts", 3)
     delay = retry_cfg.get("delay", 1.0)
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        # Создаём задачи
-        tasks = [
-            download_file(
-                session, url, output_path, semaphore, chunk_size,
-                retries_enabled, max_attempts, delay
-            )
-            for url in urls
-        ]
+    # Настройка Rich Progress (только для активных задач)
+    progress = Progress(
+        TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
+        BarColumn(bar_width=None),
+        "[progress.percentage]{task.percentage:>3.1f}%",
+        "•",
+        DownloadColumn(),
+        "•",
+        TransferSpeedColumn(),
+        "•",
+        TimeRemainingColumn(),
+        console=console,
+        expand=True,
+        auto_refresh=False  # обновляем вручную через Live
+    )
 
-        # Используем tqdm.as_completed для отслеживания прогресса
-        for coro in tqdm.as_completed(
-                tasks,
-                total=len(tasks),
-                desc="Загрузка файлов",
-                unit="файл",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-        ):
-            await coro  # дожидаемся завершения каждой задачи
+    # Инициализируем Live-рендер
+    with Live(make_status_display(progress), refresh_per_second=1, console=console) as live:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            tasks = []
+            for url in urls:
+                filename = url.split('/')[-1]
+                task_id = progress.add_task("download", filename=filename, start=False)
+                active_tasks[task_id] = filename
+                coro = download_file(
+                    session, url, output_path, semaphore, chunk_size,
+                    retries_enabled, max_attempts, delay,
+                    progress, task_id, filename
+                )
+                tasks.append(coro)
+                # Обновляем отображение после добавления задачи
+                live.update(make_status_display(progress))
+
+            # ❗ ВАЖНО: не используем gather, а обрабатываем по одной
+            for coro in asyncio.as_completed(tasks):
+                await coro  # ждём завершения одной задачи
+                live.update(make_status_display(progress))  # ← обновляем интерфейс
 
 
 def load_config(path: str = "config.yaml") -> Dict[str, Any]:
