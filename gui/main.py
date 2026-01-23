@@ -4,7 +4,7 @@ import threading
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QTabWidget, QTextEdit, QLabel, QProgressBar,
-    QScrollArea, QFrame
+    QScrollArea, QFrame, QCheckBox
 )
 from PySide6.QtCore import Signal, QObject, QTimer
 from downloader import download_files
@@ -57,9 +57,12 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.start_download)
         self.cancel_btn.clicked.connect(self.cancel_download)
+        self.resume_checkbox = QCheckBox("Возобновлять загрузку")
+        self.resume_checkbox.setChecked(True)
         input_layout.addWidget(self.url_input)
         input_layout.addWidget(self.start_btn)
         input_layout.addWidget(self.cancel_btn)
+        input_layout.addWidget(self.resume_checkbox)
         layout.addLayout(input_layout)
 
         # Вкладки (без изменений)
@@ -170,6 +173,7 @@ class MainWindow(QMainWindow):
                     on_progress=self.download_manager.on_file_progress,
                     on_complete=self.download_manager.on_file_complete,
                     check_cancelled=self.is_cancelled,
+                    resume=self.resume_checkbox.isChecked(),
                 )
             )
         except Exception as e:
