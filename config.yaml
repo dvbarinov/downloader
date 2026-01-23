@@ -1,0 +1,19 @@
+# config.yaml
+download:
+  url_template: "http://localhost:8000/media/test_{001..100}.png"
+  output_dir: "./downloads"
+  max_concurrent: 5
+  chunk_size: 8192
+
+http:
+  timeout:
+    total: 30
+    connect: 10
+  retries:
+    enabled: true
+    max_attempts: 3
+    delay: 1.0  # секунды между попытками
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "download.log"

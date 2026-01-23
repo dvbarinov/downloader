@@ -1,2 +1,4 @@
-aiohttp
-aiofiles
+aiohttp>=3.8
+aiofiles>=23.0
+PyYAML>=6.0
+tenacity>=8.0
