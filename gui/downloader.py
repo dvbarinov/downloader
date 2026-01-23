@@ -1,10 +1,14 @@
-# downloader.py
 import asyncio
 import aiohttp
 import aiofiles
 import re
 from pathlib import Path
-from typing import List, Callable, Any
+from typing import List, Callable
+
+
+class DownloadCancelled(Exception):
+    """Исключение для отмены загрузки"""
+    pass
 
 
 def expand_wildcard_url(template: str) -> List[str]:
@@ -27,9 +31,10 @@ async def download_files(
     output_dir: str,
     max_concurrent: int = 10,
     chunk_size: int = 8192,
-    on_start: Callable[[str], None] = None,      # вызывается при старте файла
-    on_progress: Callable[[str, int, int], None] = None,  # (filename, done, total)
-    on_complete: Callable[[str, bool, str], None] = None, # (filename, success, error_msg)
+    on_start: Callable[[str], None] = None,
+    on_progress: Callable[[str, int, int], None] = None,
+    on_complete: Callable[[str, bool, str], None] = None,
+    check_cancelled: Callable[[], bool] = None,  # НОВОЕ: функция проверки отмены
 ):
     urls = expand_wildcard_url(url_template)
     output_path = Path(output_dir)
@@ -41,12 +46,14 @@ async def download_files(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         tasks = []
         for url in urls:
+            if check_cancelled and check_cancelled():
+                raise DownloadCancelled("Загрузка отменена пользователем")
             filename = url.split('/')[-1]
             if on_start:
                 on_start(filename)
             task = _download_single(
                 session, url, output_path, semaphore, chunk_size,
-                filename, on_progress, on_complete
+                filename, on_progress, on_complete, check_cancelled
             )
             tasks.append(task)
         await asyncio.gather(*tasks)
@@ -54,7 +61,7 @@ async def download_files(
 
 async def _download_single(
     session, url, output_path, semaphore, chunk_size,
-    filename, on_progress, on_complete
+    filename, on_progress, on_complete, check_cancelled
 ):
     filepath = output_path / filename
     try:
@@ -66,12 +73,23 @@ async def _download_single(
                 downloaded = 0
                 async with aiofiles.open(filepath, 'wb') as f:
                     async for chunk in resp.content.iter_chunked(chunk_size):
+                        if check_cancelled and check_cancelled():
+                            raise DownloadCancelled("Отменено во время загрузки")
                         await f.write(chunk)
                         downloaded += len(chunk)
                         if on_progress:
                             on_progress(filename, downloaded, total)
                 if on_complete:
                     on_complete(filename, True, "")
+    except DownloadCancelled:
+        # Удаляем частично загруженный файл
+        try:
+            filepath.unlink(missing_ok=True)
+        except:
+            pass
+        if on_complete:
+            on_complete(filename, False, "Отменено пользователем")
+        raise
     except Exception as e:
         if on_complete:
             on_complete(filename, False, str(e))

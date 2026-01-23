@@ -1,15 +1,12 @@
-# main.py
 import sys
 import asyncio
 import threading
-from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QTabWidget, QTextEdit, QLabel, QProgressBar,
     QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Signal, QObject, QTimer
 from downloader import download_files
 
 
@@ -42,26 +39,33 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Файловый загрузчик")
         self.resize(800, 600)
 
+        # Состояние отмены
+        self._cancelled = False
+        self._download_thread = None
+
         # Центральный виджет
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        # Поле ввода и кнопка
+        # Поле ввода и кнопки
         input_layout = QHBoxLayout()
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Введите шаблон, например: https://example.com/data_{1..5}.csv")
-        self.start_btn = QPushButton("Запустить загрузку")
+        self.url_input.setPlaceholderText("https://example.com/data_{1..5}.csv")
+        self.start_btn = QPushButton("Запустить")
+        self.cancel_btn = QPushButton("Отменить")
+        self.cancel_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.start_download)
+        self.cancel_btn.clicked.connect(self.cancel_download)
         input_layout.addWidget(self.url_input)
         input_layout.addWidget(self.start_btn)
+        input_layout.addWidget(self.cancel_btn)
         layout.addLayout(input_layout)
 
-        # Вкладки
+        # Вкладки (без изменений)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        # Вкладка "Загрузки"
         self.download_widget = QWidget()
         self.download_layout = QVBoxLayout(self.download_widget)
         self.scroll_area = QScrollArea()
@@ -72,18 +76,13 @@ class MainWindow(QMainWindow):
         self.download_layout.addWidget(self.scroll_area)
         self.tabs.addTab(self.download_widget, "Загрузки")
 
-        # Вкладка "Логи"
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.tabs.addTab(self.log_text, "Логи")
 
-        # Сигналы и менеджер
         self.signals = DownloaderSignals()
         self.download_manager = DownloadManager(self.signals)
         self.setup_connections()
-
-        # Флаг занятости
-        self.is_downloading = False
 
     def setup_connections(self):
         self.signals.file_started.connect(self.add_file_entry)
@@ -97,66 +96,66 @@ class MainWindow(QMainWindow):
         frame = QFrame()
         frame.setFrameShape(QFrame.StyledPanel)
         frame_layout = QHBoxLayout(frame)
-
         label = QLabel(filename)
         label.setFixedWidth(200)
         progress = QProgressBar()
         progress.setRange(0, 100)
-        progress.setValue(0)
-
-        self.scroll_layout.addWidget(frame)
         frame_layout.addWidget(label)
         frame_layout.addWidget(progress)
-
+        self.scroll_layout.addWidget(frame)
         self.download_manager.progress_bars[filename] = progress
         self.download_manager.labels[filename] = label
-
         self.log(f"📥 Начата загрузка: {filename}")
 
     def update_progress(self, filename: str, done: int, total: int):
         if filename in self.download_manager.progress_bars:
-            progress = self.download_manager.progress_bars[filename]
+            pb = self.download_manager.progress_bars[filename]
             if total > 0:
-                percent = int((done / total) * 100)
-                progress.setValue(percent)
+                pb.setRange(0, 100)
+                pb.setValue(int((done / total) * 100))
             else:
-                # Неизвестный размер — режим "бегущей точки"
-                progress.setRange(0, 0)  # неопределённый прогресс
+                pb.setRange(0, 0)
 
     def mark_finished(self, filename: str, success: bool, error: str):
         if filename in self.download_manager.labels:
             label = self.download_manager.labels[filename]
-            if success:
-                label.setStyleSheet("color: green; font-weight: bold;")
-                self.log(f"✅ Успешно: {filename}")
-            else:
-                label.setStyleSheet("color: red; font-weight: bold;")
-                self.log(f"❌ Ошибка: {filename} → {error}")
+            color = "green" if success else "red"
+            label.setStyleSheet(f"color: {color}; font-weight: bold;")
+            status = "✅" if success else "❌"
+            self.log(f"{status} {filename}: {error if not success else 'готово'}")
 
         if filename in self.download_manager.progress_bars:
-            progress = self.download_manager.progress_bars[filename]
-            progress.setRange(0, 100)
-            progress.setValue(100 if success else 0)
+            pb = self.download_manager.progress_bars[filename]
+            pb.setRange(0, 100)
+            pb.setValue(100 if success else 0)
 
     def start_download(self):
-        if self.is_downloading:
+        if self._download_thread and self._download_thread.is_alive():
             return
         template = self.url_input.text().strip()
         if not template:
             self.log("⚠️ Шаблон не задан!")
             return
 
-        self.is_downloading = True
+        self._cancelled = False
         self.start_btn.setEnabled(False)
-        self.log(f"🚀 Запуск загрузки по шаблону: {template}")
+        self.cancel_btn.setEnabled(True)
+        self.log(f"🚀 Запуск загрузки: {template}")
 
-        # Запуск в фоновом потоке
-        thread = threading.Thread(
+        self._download_thread = threading.Thread(
             target=self.run_async_download,
             args=(template,),
             daemon=True
         )
-        thread.start()
+        self._download_thread.start()
+
+    def cancel_download(self):
+        self._cancelled = True
+        self.cancel_btn.setEnabled(False)
+        self.log("🛑 Запрошена отмена загрузки...")
+
+    def is_cancelled(self):
+        return self._cancelled
 
     def run_async_download(self, template: str):
         loop = asyncio.new_event_loop()
@@ -170,17 +169,23 @@ class MainWindow(QMainWindow):
                     on_start=self.download_manager.on_file_start,
                     on_progress=self.download_manager.on_file_progress,
                     on_complete=self.download_manager.on_file_complete,
+                    check_cancelled=self.is_cancelled,
                 )
             )
+        except Exception as e:
+            if "Отменено" in str(e):
+                QTimer.singleShot(0, lambda: self.log("⏹️ Загрузка отменена."))
+            else:
+                QTimer.singleShot(0, lambda: self.log(f"💥 Критическая ошибка: {e}"))
         finally:
             loop.close()
-            # Вернуться в основной поток для обновления UI
             QTimer.singleShot(0, self.download_finished)
 
     def download_finished(self):
-        self.is_downloading = False
         self.start_btn.setEnabled(True)
-        self.log("🏁 Все загрузки завершены!")
+        self.cancel_btn.setEnabled(False)
+        if not self._cancelled:
+            self.log("🏁 Все загрузки завершены!")
 
 
 if __name__ == "__main__":
