@@ -19,7 +19,7 @@ def setup_logging(config: Dict[str, Any]) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file, encoding='utf-8'),
-            #logging.StreamHandler(sys.stdout) # лучше не выводить в консоль из-за прогрессбара
+            # logging.StreamHandler(sys.stdout) # лучше не выводить в консоль из-за прогрессбара
         ]
     )
 
@@ -163,7 +163,13 @@ async def download_all(config: Dict[str, Any]):
         ]
 
         # Используем tqdm.as_completed для отслеживания прогресса
-        for coro in tqdm.as_completed(tasks, total=len(tasks), desc="Загрузка файлов"):
+        for coro in tqdm.as_completed(
+                tasks,
+                total=len(tasks),
+                desc="Загрузка файлов",
+                unit="файл",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+        ):
             await coro  # дожидаемся завершения каждой задачи
 
 
@@ -184,7 +190,17 @@ def main():
 
     config = load_config(config_path)
     setup_logging(config.get("logging", {}))
-    asyncio.run(download_all(config))
+    try:
+        asyncio.run(download_all(config))
+        logging.info("✅ Все файлы загружены!")
+    except KeyboardInterrupt:
+        logging.warning("⚠️ Загрузка прервана пользователем (Ctrl+C)")
+        print("\n\n🛑 Загрузка остановлена.")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Критическая ошибка: {e}")
+        raise
+
 
 if __name__ == "__main__":
     main()
