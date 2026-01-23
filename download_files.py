@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import yaml
 from tenacity import retry, stop_after_attempt, wait_fixed
+from tqdm.asyncio import tqdm  # tqdm поддерживает asyncio напрямую
 
 
 def setup_logging(config: Dict[str, Any]) -> None:
@@ -18,7 +19,7 @@ def setup_logging(config: Dict[str, Any]) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
+            #logging.StreamHandler(sys.stdout) # лучше не выводить в консоль из-за прогрессбара
         ]
     )
 
@@ -127,6 +128,8 @@ async def download_file(
         except Exception as e:
             logging.error(f"❌ Ошибка при загрузке {url}: {e}")
 
+    return True  # важно для as_completed
+
 
 async def download_all(config: Dict[str, Any]):
     """Основная функция загрузки"""
@@ -150,6 +153,7 @@ async def download_all(config: Dict[str, Any]):
     delay = retry_cfg.get("delay", 1.0)
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Создаём задачи
         tasks = [
             download_file(
                 session, url, output_path, semaphore, chunk_size,
@@ -157,7 +161,10 @@ async def download_all(config: Dict[str, Any]):
             )
             for url in urls
         ]
-        await asyncio.gather(*tasks)
+
+        # Используем tqdm.as_completed для отслеживания прогресса
+        for coro in tqdm.as_completed(tasks, total=len(tasks), desc="Загрузка файлов"):
+            await coro  # дожидаемся завершения каждой задачи
 
 
 def load_config(path: str = "config.yaml") -> Dict[str, Any]:
