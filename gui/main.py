@@ -1,6 +1,8 @@
 import sys
 import asyncio
 import threading
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QTabWidget, QTextEdit, QLabel, QProgressBar,
@@ -21,7 +23,7 @@ class DownloadManager:
     def __init__(self, signals: DownloaderSignals):
         self.signals = signals
         self.progress_bars = {}  # filename -> QProgressBar
-        self.labels = {}         # filename -> QLabel (статус)
+        self.labels = {}  # filename -> QLabel (статус)
 
     def on_file_start(self, filename: str):
         self.signals.file_started.emit(filename)
@@ -59,10 +61,13 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self.cancel_download)
         self.resume_checkbox = QCheckBox("Возобновлять загрузку")
         self.resume_checkbox.setChecked(True)
+        self.clear_btn = QPushButton("Очистить частичные")
+        self.clear_btn.clicked.connect(self.clear_partial_downloads)
         input_layout.addWidget(self.url_input)
         input_layout.addWidget(self.start_btn)
         input_layout.addWidget(self.cancel_btn)
         input_layout.addWidget(self.resume_checkbox)
+        input_layout.addWidget(self.clear_btn)
         layout.addLayout(input_layout)
 
         # Вкладки (без изменений)
@@ -190,6 +195,49 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         if not self._cancelled:
             self.log("🏁 Все загрузки завершены!")
+
+    def clear_partial_downloads(self):
+        """Удаляет все файлы, у которых есть .meta — считаем их незавершёнными"""
+        output_dir = Path("./downloads")
+        if not output_dir.exists():
+            self.log("📂 Папка загрузок пуста.")
+            return
+
+        deleted_files = []
+        for meta_file in output_dir.glob(".*.meta"):
+            if not meta_file.is_file():
+                continue
+            # Имя оригинального файла: убираем точку в начале и .meta в конце
+            orig_name = meta_file.name[1:-5]  # например: ".file.csv.meta" → "file.csv"
+            orig_path = output_dir / orig_name
+
+            try:
+                # Удаляем оригинальный файл и мета
+                if orig_path.exists():
+                    orig_path.unlink()
+                meta_file.unlink()
+                deleted_files.append(orig_name)
+            except Exception as e:
+                self.log(f"⚠️ Не удалось удалить {orig_name}: {e}")
+
+        if deleted_files:
+            msg = f"🗑️ Удалено частичных загрузок: {len(deleted_files)}\n• " + "\n• ".join(deleted_files)
+            self.log(msg)
+            # Очистим список в GUI (опционально — можно перезапустить вкладку)
+            self.clear_download_list()
+        else:
+            self.log("✅ Нет частичных загрузок для удаления.")
+
+        self.start_btn.setEnabled(True)
+
+    def clear_download_list(self):
+        """Очищает список файлов в GUI-вкладке 'Загрузки'"""
+        while self.scroll_layout.count():
+            child = self.scroll_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.download_manager.progress_bars.clear()
+        self.download_manager.labels.clear()
 
 
 if __name__ == "__main__":

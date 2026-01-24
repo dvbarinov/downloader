@@ -22,7 +22,7 @@ def expand_wildcard_url(template: str) -> List[str]:
         raise ValueError("Начало > конца")
     width = len(start_str) if start_str.startswith('0') and len(start_str) > 1 else 0
     return [
-        template[:match.start()] + (str(i).zfill(width) if width else str(i)) + template[match.end()]
+        template[:match.start()] + (str(i).zfill(width) if width else str(i)) + template[match.end():]
         for i in range(start, end + 1)
     ]
 
@@ -78,9 +78,11 @@ async def _download_single(
         # Шаг 1: Получаем размер файла на сервере
         async with session.head(url) as head_resp:
             if head_resp.status != 200:
-                raise Exception(f"HEAD failed: {head_resp.status}")
-            server_size = head_resp.content_length
-            accepts_ranges = 'bytes' in head_resp.headers.get('Accept-Ranges', '').lower()
+                #raise Exception(f"HEAD failed: {head_resp.status}")
+                accepts_ranges = False  # без размера — не можем возобновить
+            else:
+                server_size = head_resp.content_length
+                accepts_ranges = 'bytes' in head_resp.headers.get('Accept-Ranges', '').lower()
 
         if server_size is None:
             accepts_ranges = False  # без размера — не можем возобновить
