@@ -100,23 +100,9 @@ async def download_file(
         try:
             filepath = output_dir / filename
 
-            if retries_enabled:
-                # Патчим retry-декоратор под текущие настройки
-                @retry(
-                    stop=stop_after_attempt(max_attempts),
-                    wait=wait_fixed(delay),
-                    reraise=True
-                )
                 async def _download():
                     async with session.get(url) as resp:
-                        if resp.status != 200:
-                            raise aiohttp.ClientResponseError(
-                                request_info=resp.request_info,
-                                history=resp.history,
-                                status=resp.status,
-                                message=f"HTTP {resp.status}",
-                                headers=resp.headers
-                            )
+                    if resp.status == 200:
                         # Получаем общий размер, если есть
                         total = resp.content_length or 1
                         if total is None or total == 0:
@@ -125,19 +111,6 @@ async def download_file(
                             progress.start_task(task_id)
                         else:
                             progress.update(task_id, total=total, visible=True)
-
-                        async with aiofiles.open(filepath, 'wb') as f:
-                            async for chunk in resp.content.iter_chunked(chunk_size):
-                                await f.write(chunk)
-                                progress.update(task_id, advance=len(chunk))
-                await _download()
-                completed_files.append(filename)
-                logging.info("✅ Успешно: %s → %s",url ,filepath)
-            else:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        total = resp.content_length or 1
-                        progress.update(task_id, total=total, visible=True)
 
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
@@ -153,7 +126,21 @@ async def download_file(
                             message=f"HTTP {resp.status}",
                             headers=resp.headers
                         )
-        except Exception as e:
+
+            if retries_enabled:
+                # Патчим retry-декоратор под текущие настройки
+                @retry(
+                    stop=stop_after_attempt(max_attempts),
+                    wait=wait_fixed(delay),
+                    reraise=True
+                )
+                async def _retrying_download():
+                    await _download()
+
+                await _retrying_download()
+            else:
+                await _download()
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
             error_msg = str(e)[:80]  # укоротим длинные ошибки
             failed_files.append((filename, error_msg))
             logging.error("❌ Ошибка при загрузке %s: %s", url, e)
