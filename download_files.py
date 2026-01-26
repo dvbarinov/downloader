@@ -182,23 +182,24 @@ def make_status_display(progress: Progress) -> Table:
 
     # Активные задачи — используем сам объект Progress
     if active_tasks:
-        table.add_row(Panel(progress, title=f"📥 В процессе ({len(active_tasks)})", border_style="blue"))
+        table.add_row(Panel(progress, title=f"📥 В процессе: {len(active_tasks)}.", border_style="blue"))
     else:
-        table.add_row(Text("📥 В процессе (0)", style="blue"))
+        table.add_row(Text("📥 В процессе: 0.", style="blue"))
 
     # Завершённые
     if completed_files:
         completed_text = Text("\n".join(f"• {f}" for f in sorted(completed_files[-20:])))  # последние 20
-        table.add_row(Panel(completed_text, title=f"✅ Завершено ({len(completed_files)})", border_style="green"))
+        add_comment = 'Показаны последние 20' if len(completed_files)>=20 else ''
+        table.add_row(Panel(completed_text, title=f"✅ Завершено: {len(completed_files)}. {add_comment}", border_style="green"))
     else:
-        table.add_row(Text("✅ Завершено (0)", style="green"))
+        table.add_row(Text("✅ Завершено: 0.", style="green"))
 
     # Ошибки
     if failed_files:
         failed_text = Text("\n".join(f"• {f} → {err}" for f, err in failed_files[-10:]))  # последние 10
-        table.add_row(Panel(failed_text, title=f"❌ Ошибки ({len(failed_files)})", border_style="red"))
+        table.add_row(Panel(failed_text, title=f"❌ Ошибки: {len(failed_files)}.", border_style="red"))
     else:
-        table.add_row(Text("❌ Ошибки (0)", style="red"))
+        table.add_row(Text("❌ Ошибки: 0.", style="red"))
 
     return table
 
