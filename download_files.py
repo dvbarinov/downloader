@@ -231,9 +231,14 @@ async def download_all(config: Dict[str, Any]):
 
     # Настройка Rich Progress (только для активных задач)
     progress = Progress(
-        SpinnerColumn(),
+        SpinnerColumn("arc", style="yellow", speed=1.0),
         TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
-        BarColumn(bar_width=None),
+        BarColumn(
+            bar_width=None,
+            complete_style="green",
+            finished_style="green bold",
+            pulse_style="blue"
+        ),
         #"{task.completed}-{task.total}",
         "[progress.percentage]{task.percentage:>3.1f}%",
         "•",
@@ -248,7 +253,7 @@ async def download_all(config: Dict[str, Any]):
     )
 
     # Инициализируем Live-рендер
-    with Live(make_status_display(progress), refresh_per_second=5, console=console) as live:
+    with Live(make_status_display(progress), refresh_per_second=10, console=console) as live:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             tasks: List[asyncio.Task[Any]] = []
             for url in urls:
