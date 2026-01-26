@@ -275,10 +275,12 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def main():
+def main(argv=None):
     """ Основная функция """
-    if len(sys.argv) > 1:
-        config_path = sys.argv[1]
+    if argv is None:
+        argv = sys.argv[1:]  # реальный запуск из CLI
+    if len(argv) > 0:
+        config_path = argv[0]
     else:
         config_path = "config.yaml"
 
