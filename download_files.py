@@ -21,8 +21,8 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
     DownloadColumn,
+    SpinnerColumn,
 )
-from rich.layout import Layout
 from rich.table import Table
 
 
@@ -31,7 +31,7 @@ console = Console()
 # Глобальные списки для отслеживания состояния
 completed_files = []
 failed_files = []  # хранит кортежи (filename, error_message)
-active_tasks = {}  # task_id -> filename
+active_tasks: dict[int, str] = {}  # task_id -> filename
 
 
 def setup_logging(config: Dict[str, Any]) -> None:
@@ -127,25 +127,31 @@ async def download_file(
                                 headers=resp.headers
                             )
                         # Получаем общий размер, если есть
-                        total = resp.content_length or 0
-                        progress.update(task_id, total=total)
+                        total = resp.content_length or 1
+                        if total is None or total == 0:
+                            # Можно создать задачу без total → будет неопределённый прогресс
+                            progress.start_task(task_id)
+                            # Но BarColumn всё равно не заполнится — это нормально
+                        else:
+                            progress.update(task_id, total=total, refresh=True)
 
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
                                 await f.write(chunk)
-                                progress.update(task_id, advance=len(chunk))
+                                progress.update(task_id, advance=len(chunk), refresh=True)
                 await _download()
                 completed_files.append(filename)
                 logging.info(f"✅ Успешно: {url} → {filepath}")
             else:
                 async with session.get(url) as resp:
                     if resp.status == 200:
-                        total = resp.content_length or 0
-                        progress.update(task_id, total=total)
+                        total = resp.content_length or 1
+                        progress.update(task_id, total=total, refresh=True)
+
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
                                 await f.write(chunk)
-                                progress.update(task_id, advance=len(chunk))
+                                progress.update(task_id, advance=len(chunk), refresh=True)
                         completed_files.append(filename)
                         logging.info(f"✅ Успешно: {url} → {filepath}")
                     else:
@@ -225,8 +231,10 @@ async def download_all(config: Dict[str, Any]):
 
     # Настройка Rich Progress (только для активных задач)
     progress = Progress(
+        SpinnerColumn(),
         TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
         BarColumn(bar_width=None),
+        #"{task.completed}-{task.total}",
         "[progress.percentage]{task.percentage:>3.1f}%",
         "•",
         DownloadColumn(),
@@ -236,13 +244,14 @@ async def download_all(config: Dict[str, Any]):
         TimeRemainingColumn(),
         console=console,
         expand=True,
-        auto_refresh=False  # обновляем вручную через Live
+        auto_refresh=True
+        # auto_refresh=False  # обновляем вручную через Live
     )
 
     # Инициализируем Live-рендер
-    with Live(make_status_display(progress), refresh_per_second=1, console=console) as live:
+    with Live(make_status_display(progress), refresh_per_second=5, console=console) as live:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            tasks = []
+            tasks: List[asyncio.Task[Any]] = []
             for url in urls:
                 filename = url.split('/')[-1]
                 task_id = progress.add_task("download", filename=filename, start=False)
@@ -252,13 +261,14 @@ async def download_all(config: Dict[str, Any]):
                     retries_enabled, max_attempts, delay,
                     progress, task_id, filename
                 )
-                tasks.append(coro)
+                tasks.append(asyncio.create_task(coro))
                 # Обновляем отображение после добавления задачи
                 live.update(make_status_display(progress))
 
+            # Ждём завершения всех задач
             # ❗ ВАЖНО: не используем gather, а обрабатываем по одной
-            for coro in asyncio.as_completed(tasks):
-                await coro  # ждём завершения одной задачи
+            for completed_task in asyncio.as_completed(tasks):
+                await completed_task  # ждём завершения одной задачи
                 live.update(make_status_display(progress))  # ← обновляем интерфейс
 
 
