@@ -133,12 +133,12 @@ async def download_file(
                             progress.start_task(task_id)
                             # Но BarColumn всё равно не заполнится — это нормально
                         else:
-                            progress.update(task_id, total=total, refresh=True)
+                            progress.update(task_id, total=total)
 
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
                                 await f.write(chunk)
-                                progress.update(task_id, advance=len(chunk), refresh=True)
+                                progress.update(task_id, advance=len(chunk))
                 await _download()
                 completed_files.append(filename)
                 logging.info(f"✅ Успешно: {url} → {filepath}")
@@ -146,12 +146,12 @@ async def download_file(
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         total = resp.content_length or 1
-                        progress.update(task_id, total=total, refresh=True)
+                        progress.update(task_id, total=total)
 
                         async with aiofiles.open(filepath, 'wb') as f:
                             async for chunk in resp.content.iter_chunked(chunk_size):
                                 await f.write(chunk)
-                                progress.update(task_id, advance=len(chunk), refresh=True)
+                                progress.update(task_id, advance=len(chunk))
                         completed_files.append(filename)
                         logging.info(f"✅ Успешно: {url} → {filepath}")
                     else:
@@ -244,7 +244,6 @@ async def download_all(config: Dict[str, Any]):
         TimeRemainingColumn(),
         console=console,
         expand=True,
-        auto_refresh=True
         # auto_refresh=False  # обновляем вручную через Live
     )
 
@@ -254,7 +253,7 @@ async def download_all(config: Dict[str, Any]):
             tasks: List[asyncio.Task[Any]] = []
             for url in urls:
                 filename = url.split('/')[-1]
-                task_id = progress.add_task("download", filename=filename, start=False)
+                task_id = progress.add_task("download", filename=filename)
                 active_tasks[task_id] = filename
                 coro = download_file(
                     session, url, output_path, semaphore, chunk_size,
