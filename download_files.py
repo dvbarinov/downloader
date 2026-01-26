@@ -1,11 +1,20 @@
-import asyncio
-import aiohttp
-import aiofiles
+"""
+Асинхронный загрузчик файлов с возможностью указания диапазона файлов
+
+Использование:
+python download_files.py 'https://example.com/data_{1..5}.csv'
+или
+python download_files.py
+с указанием параметров в файле config.yaml
+"""
 import re
 import logging
 import sys
 from pathlib import Path
 from typing import List, Dict, Any
+import asyncio
+import aiohttp
+import aiofiles
 import yaml
 from tenacity import retry, stop_after_attempt, wait_fixed
 #from tqdm.asyncio import tqdm  # tqdm поддерживает asyncio напрямую
@@ -35,6 +44,7 @@ active_tasks: dict[int, str] = {}  # task_id -> filename
 
 
 def setup_logging(config: Dict[str, Any]) -> None:
+    """ Настройка логирования """
     log_level = getattr(logging, config.get("level", "INFO").upper())
     log_file = config.get("file", "download.log")
     logging.basicConfig(
@@ -69,25 +79,6 @@ def expand_wildcard_url(template: str) -> List[str]:
         url = template[:match.start()] + repl + template[match.end():]
         urls.append(url)
     return urls
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_fixed(1),
-    reraise=True
-)
-async def fetch_content(session: aiohttp.ClientSession, url: str) -> bytes:
-    async with session.get(url) as resp:
-        if resp.status == 200:
-            return await resp.read()
-        else:
-            raise aiohttp.ClientResponseError(
-                request_info=resp.request_info,
-                history=resp.history,
-                status=resp.status,
-                message=f"HTTP {resp.status}",
-                headers=resp.headers
-            )
 
 
 async def download_file(
@@ -130,8 +121,8 @@ async def download_file(
                         total = resp.content_length or 1
                         if total is None or total == 0:
                             # Можно создать задачу без total → будет неопределённый прогресс
+                            # BarColumn не заполнится — это нормально
                             progress.start_task(task_id)
-                            # Но BarColumn всё равно не заполнится — это нормально
                         else:
                             progress.update(task_id, total=total, visible=True)
 
@@ -141,7 +132,7 @@ async def download_file(
                                 progress.update(task_id, advance=len(chunk))
                 await _download()
                 completed_files.append(filename)
-                logging.info(f"✅ Успешно: {url} → {filepath}")
+                logging.info("✅ Успешно: %s → %s",url ,filepath)
             else:
                 async with session.get(url) as resp:
                     if resp.status == 200:
@@ -153,7 +144,7 @@ async def download_file(
                                 await f.write(chunk)
                                 progress.update(task_id, advance=len(chunk))
                         completed_files.append(filename)
-                        logging.info(f"✅ Успешно: {url} → {filepath}")
+                        logging.info("✅ Успешно: %s → %s",url ,filepath)
                     else:
                         raise aiohttp.ClientResponseError(
                             request_info=resp.request_info,
@@ -165,7 +156,7 @@ async def download_file(
         except Exception as e:
             error_msg = str(e)[:80]  # укоротим длинные ошибки
             failed_files.append((filename, error_msg))
-            logging.error(f"❌ Ошибка при загрузке {url}: {e}")
+            logging.error("❌ Ошибка при загрузке %s: %s", url, e)
         finally:
             # Удаляем из активных
             if task_id in active_tasks:
@@ -182,22 +173,36 @@ def make_status_display(progress: Progress) -> Table:
 
     # Активные задачи — используем сам объект Progress
     if active_tasks:
-        table.add_row(Panel(progress, title=f"📥 В процессе: {len(active_tasks)}.", border_style="blue"))
+        table.add_row(Panel(
+            progress,
+            title=f"📥 В процессе: {len(active_tasks)}.",
+            border_style="blue"
+        ))
     else:
         table.add_row(Text("📥 В процессе: 0.", style="blue"))
 
     # Завершённые
     if completed_files:
-        completed_text = Text("\n".join(f"• {f}" for f in sorted(completed_files[-20:])))  # последние 20
+        completed_text = Text("\n".join(f"• {f}"
+        for f in sorted(completed_files[-20:])))  # последние 20
         add_comment = 'Показаны последние 20' if len(completed_files)>=20 else ''
-        table.add_row(Panel(completed_text, title=f"✅ Завершено: {len(completed_files)}. {add_comment}", border_style="green"))
+        table.add_row(Panel(
+            completed_text,
+            title=f"✅ Завершено: {len(completed_files)}. {add_comment}",
+            border_style="green"
+        ))
     else:
         table.add_row(Text("✅ Завершено: 0.", style="green"))
 
     # Ошибки
     if failed_files:
-        failed_text = Text("\n".join(f"• {f} → {err}" for f, err in failed_files[-10:]))  # последние 10
-        table.add_row(Panel(failed_text, title=f"❌ Ошибки: {len(failed_files)}.", border_style="red"))
+        failed_text = Text("\n".join(f"• {f} → {err}"
+        for f, err in failed_files[-10:]))  # последние 10
+        table.add_row(Panel(
+            failed_text,
+            title=f"❌ Ошибки: {len(failed_files)}.",
+            border_style="red"
+        ))
     else:
         table.add_row(Text("❌ Ошибки: 0.", style="red"))
 
@@ -278,11 +283,13 @@ async def download_all(config: Dict[str, Any]):
 
 
 def load_config(path: str = "config.yaml") -> Dict[str, Any]:
+    """ Получение настроек из файла """
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def main():
+    """ Основная функция """
     if len(sys.argv) > 1:
         config_path = sys.argv[1]
     else:
@@ -302,7 +309,7 @@ def main():
         print("\n\n🛑 Загрузка остановлена.")
         sys.exit(1)
     except Exception as e:
-        logging.error(f"Критическая ошибка: {e}")
+        logging.error("Критическая ошибка: %s", e)
         raise
 
 
